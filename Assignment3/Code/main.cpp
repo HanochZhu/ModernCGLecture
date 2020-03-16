@@ -367,14 +367,13 @@ Eigen::Vector3f bump_fragment_shader(const fragment_shader_payload& payload)
     float v = tex_coord(1);
     float w = texture->width;
     float h = texture->height;
-
     Vector3f t = {x * y/sqrt(x*x+z*z),sqrt(x*x+z*z),z*y/sqrt(x*x+z*z)};
     Vector3f b = normal.cross(t);
     Eigen::Matrix3f TBN;
     TBN<< t,b,normal;
-
-    float dU = kh * kn * (texture->getColor(u+1/w,v).norm() - texture->getColor(u,v).norm());
-    float dV = kh * kn * (texture->getColor(u,v+1/h).norm() - texture->getColor(u,v).norm());
+    
+    float dU = kh * kn * (texture->getColor(u + 1 / w,v).norm() - texture->getColor(u,v).norm());
+    float dV = kh * kn * (texture->getColor(u,v + 1 / h).norm() - texture->getColor(u,v).norm());
     Vector3f ln = {-dU, -dV, 1};
     normal = (TBN * ln).normalized();
 
@@ -383,8 +382,6 @@ Eigen::Vector3f bump_fragment_shader(const fragment_shader_payload& payload)
 
     return result_color * 255.f;
 }
-
-
 
 
 int main(int argc, const char** argv)
@@ -472,7 +469,6 @@ int main(int argc, const char** argv)
 
         r.set_view(get_view_matrix(eye_pos));
         r.set_projection(get_projection_matrix(45.0, 1, 0.1, 50));
-
         r.draw(TriangleList);
         cv::Mat image(700, 700, CV_32FC3, r.frame_buffer().data());
         image.convertTo(image, CV_8UC3, 1.0f);

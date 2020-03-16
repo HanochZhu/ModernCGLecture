@@ -196,6 +196,7 @@ void rst::rasterizer::draw(std::vector<Triangle *> &TriangleList) {
     Eigen::Matrix4f mvp = projection * view * model;
     for (const auto& t:TriangleList)
     {
+
         Triangle newtri = *t;
 
         std::array<Eigen::Vector4f, 3> mm {
@@ -308,13 +309,6 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t, const std::array<Eig
     maxy = maxy < height ? maxy : height - 2;
 
     // end get bounding box
-
-    // start rasterize
-    // std::cout<<"minx" << minx<<std::endl;
-    // std::cout<<"miny" << miny<<std::endl;
-    // std::cout<<"maxx" << maxx<<std::endl;
-    // std::cout<<"maxy" << maxy<<std::endl;
-
     for(int x = minx;x < maxx;x ++)
     {
         for(int y = miny;y < maxy;y ++)
@@ -322,49 +316,45 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t, const std::array<Eig
             if (x < 0 || x >= width) std::cout<<"out bounce x "<< x << " minx "<<minx << " maxx " <<maxx<<std::endl;
             if (y < 0 || y >= height) std::cout<<"out bounce y "<< y << " miny "<<miny << " maxy " <<maxy<<std::endl;
 
-            // if(x > width || y > height) continue;
-            // try msaa 4 x 4
-            float rate = 0.0;
-
-            // hard code
-            if (insideTriangle(x + 0.25,y + 0.75,t.v)) rate ++;
-            if (insideTriangle(x + 0.25,y + 0.25,t.v)) rate ++;
-            if (insideTriangle(x + 0.75,y + 0.25,t.v)) rate ++;
-            if (insideTriangle(x + 0.75,y + 0.75,t.v)) rate ++;
-
-            //if (insideTriangle(x,y,t.v))
-            if(rate > 0)
+            Vector3f averageColor = {0,0,0};
+            for(int index = 0;index < 4;index ++)
             {
-                // calulate after projection?
-                auto[alpha, beta, gamma] = computeBarycentric2D(x, y, t.v);
-                float w_reciprocal = 1.0/(alpha / v[0].w() + beta / v[1].w() + gamma / v[2].w());
-                float z_interpolated = alpha * v[0].z() / v[0].w() + beta * v[1].z() / v[1].w() + gamma * v[2].z() / v[2].w();
-                z_interpolated *= w_reciprocal;
-                int pixelIndex = get_index(x,y);
-                if(depth_buf[pixelIndex] > z_interpolated)
+                float tx,ty;
+                float bufIndex = get_index_MSAA2x2(x,y,index);
+                
+                if(index == 0) {tx = x + 0.25; ty = y + 0.25;}
+                if(index == 1) {tx = x + 0.75; ty = y + 0.25;}
+                if(index == 2) {tx = x + 0.25; ty = y + 0.75;}
+                if(index == 3) {tx = x + 0.75; ty = y + 0.75;}
+
+                if (insideTriangle(tx,ty,t.v))
                 {
-                    depth_buf[pixelIndex] = z_interpolated;
+                    auto[alpha, beta, gamma] = computeBarycentric2D(tx, ty, t.v);
+                    if(alpha < 0 || beta < 0 || gamma < 0) continue;
+                    float w_reciprocal = 1.0/(alpha / v[0].w() + beta / v[1].w() + gamma / v[2].w());
+                    float z_interpolated = alpha * v[0].z() / v[0].w() + beta * v[1].z() / v[1].w() + gamma * v[2].z() / v[2].w();
+                    z_interpolated *= w_reciprocal;
 
-                    auto interpolated_color = interpolate(alpha,beta,gamma,  t.color[0] , t.color[1] , t.color[2],1.0) ;
-                    auto interpolated_normal = interpolate(alpha , beta,gamma, t.normal[0], t.normal[1] , t.normal[2], 1.0);
-                    auto interpolated_texcoords = interpolate(alpha , beta,gamma, t.tex_coords[0] , t.tex_coords[1] , t.tex_coords[2],1.0) ;
-                    auto interpolated_shadingcoords = interpolate(alpha , beta,gamma, view_pos[0] , view_pos[1] , view_pos[2],1.0) ;
-
-                    // t vertex in screen space 
+                    auto interpolated_color = interpolate(      alpha,  beta,   gamma,  t.color[0] , t.color[1] , t.color[2],1.0) ;
+                    auto interpolated_normal = interpolate(     alpha , beta,   gamma,  t.normal[0], t.normal[1] , t.normal[2], 1.0);
+                    auto interpolated_texcoords = interpolate(  alpha , beta,   gamma,  t.tex_coords[0] , t.tex_coords[1] , t.tex_coords[2],1.0) ;
+                    auto interpolated_shadingcoords = interpolate(alpha , beta, gamma,  view_pos[0] , view_pos[1] , view_pos[2],1.0) ;
                     auto interpolated_worldspace_pos = (alpha * t.v[0] + beta * t.v[1] + gamma * t.v[2]) * w_reciprocal;
 
                     fragment_shader_payload payload( interpolated_color, interpolated_normal.normalized(), interpolated_texcoords, texture ? &*texture : nullptr);
                     payload.view_pos = interpolated_shadingcoords;
                     payload.world_pos = interpolated_worldspace_pos.head(3);
 
-                    auto pixel_color = fragment_shader(payload);
-
-                    rate = rate / 4.0f;
-
-                    frame_buf[pixelIndex] = pixel_color * rate;
-                    set_pixel(Eigen::Vector2i(x,y), frame_buf[pixelIndex]);
+                    if(depth_buf[bufIndex] > z_interpolated)
+                    {
+                        depth_buf[bufIndex] = z_interpolated;
+                        Vector3f color = fragment_shader(payload);
+                        frame_buf_msaa[bufIndex] = color;
+                    }
                 }
+                averageColor += frame_buf_msaa[bufIndex];
             }
+            set_pixel(Eigen::Vector2i(x,y), averageColor / 4.0);
         }
     }
 
@@ -410,6 +400,7 @@ void rst::rasterizer::clear(rst::Buffers buff)
     if ((buff & rst::Buffers::Color) == rst::Buffers::Color)
     {
         std::fill(frame_buf.begin(), frame_buf.end(), Eigen::Vector3f{0, 0, 0});
+        std::fill(frame_buf_msaa.begin(), frame_buf_msaa.end(), Eigen::Vector3f{0, 0, 0});
     }
     if ((buff & rst::Buffers::Depth) == rst::Buffers::Depth)
     {
@@ -419,14 +410,24 @@ void rst::rasterizer::clear(rst::Buffers buff)
 
 rst::rasterizer::rasterizer(int w, int h) : width(w), height(h)
 {
-    frame_buf.resize(w * h);
-    depth_buf.resize(w * h);
-    texture = std::nullopt;
+    frame_buf.resize(w *  h);
+    frame_buf_msaa.resize(w * h * 4);
+    depth_buf.resize(w *  h * 4);
 }
 
 int rst::rasterizer::get_index(int x, int y)
 {
     return (height-y)*width + x;
+}
+
+// x,y real coor
+// index msaa index
+int rst::rasterizer::get_index_MSAA2x2(int x, int y,int index)
+{
+    if (index < 2)
+        return ((y) * 2 * width  + x ) * 2 + index;
+    else
+        return (((y) * 2 + 1 ) * width  + x ) * 2 + index - 2;
 }
 
 void rst::rasterizer::set_pixel(const Vector2i &point, const Eigen::Vector3f &color)
